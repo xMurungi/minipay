@@ -16,7 +16,7 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 
 type errorBody struct {
 	Error struct {
-		Code string `json:"code"`
+		Code    string `json:"code"`
 		Message string `json:"message"`
 	} `json:"error"`
 }
@@ -30,5 +30,3 @@ func WriteError(w http.ResponseWriter, status int, code string, message string) 
 }
 
 // --- Middleware ---
-
-

@@ -42,7 +42,7 @@ func main() {
 	}
 
 	log.Println("listening on", srv.Addr)
-	
+
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}

@@ -6,8 +6,8 @@ import (
 	"github.com/xMurungi/minipay/internal/ledger"
 )
 
-type Server struct { 
-	svc *ledger.Service 
+type Server struct {
+	svc *ledger.Service
 }
 
 func New(svc *ledger.Service) http.Handler {
@@ -23,7 +23,7 @@ func New(svc *ledger.Service) http.Handler {
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(
-		w, 
-		http.StatusOK, 
+		w,
+		http.StatusOK,
 		map[string]string{"status": "ok"})
 }
