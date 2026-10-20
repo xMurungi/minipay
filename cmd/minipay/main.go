@@ -219,22 +219,20 @@ func transfer(ctx context.Context, pool *pgxpool.Pool, sourceID, destID, amountM
 	if err != nil {
 		return transferResult{}, err
 	}
-
 	defer tx.Rollback(ctx)
 
 	// lock both accounts, lowest id first, and read what we need to decide
-	rows, err := tx.Query(ctx, `
-		SELECT id, balance_minor, is_system FROM accounts
-		WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []int64{sourceID, destID})
+	rows, err := tx.Query(ctx,
+		`SELECT id, balance_minor, is_system FROM accounts
+		  WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+		[]int64{sourceID, destID})
 	if err != nil {
 		return transferResult{}, err
 	}
-
 	type acct struct {
 		balance int64
-		system bool
+		system  bool
 	}
-
 	accts := map[int64]acct{}
 	for rows.Next() {
 		var id int64
@@ -242,10 +240,8 @@ func transfer(ctx context.Context, pool *pgxpool.Pool, sourceID, destID, amountM
 		if err := rows.Scan(&id, &a.balance, &a.system); err != nil {
 			return transferResult{}, err
 		}
-
 		accts[id] = a
 	}
-
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return transferResult{}, err
@@ -253,48 +249,45 @@ func transfer(ctx context.Context, pool *pgxpool.Pool, sourceID, destID, amountM
 
 	src, okS := accts[sourceID]
 	_, okD := accts[destID]
-	if ! okS || !okD {
+	if !okS || !okD {
 		return transferResult{}, errAccountNotFound
 	}
-
 	if !src.system && src.balance < amountMinor {
 		return transferResult{}, errInsufficientFunds
 	}
 
 	var res transferResult
-	if err := tx.QueryRow(ctx, 
-		`UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2 RETURNING balance_minor`, 
+	if err := tx.QueryRow(ctx,
+		`UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2 RETURNING balance_minor`,
 		amountMinor, sourceID).Scan(&res.SourceBalance); err != nil {
 		return transferResult{}, err
 	}
-
-	if err := tx.QueryRow(ctx, 
-		`UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`, 
-		amountMinor, res.DestBalance).Scan(&res.DestBalance); err != nil {
+	if err := tx.QueryRow(ctx,
+		`UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`,
+		amountMinor, destID).Scan(&res.DestBalance); err != nil {
 		return transferResult{}, err
 	}
 
-	var tranferID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
-		VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
-			$1, $2, $3, 'COMPLETED'
-		RETURNING id, reference`,
-	sourceID, destID, amountMinor).Scan(&tranferID, &res.Reference); err != nil {
+	var transferID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
+		 VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
+		         $1, $2, $3, 'COMPLETED')
+		 RETURNING id, reference`,
+		sourceID, destID, amountMinor).Scan(&transferID, &res.Reference); err != nil {
 		return transferResult{}, err
 	}
 
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
-		VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`, 
-		tranferID, sourceID, destID, amountMinor); err != nil {
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
+		 VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`,
+		transferID, sourceID, destID, amountMinor); err != nil {
 		return transferResult{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return transferResult{}, err
 	}
-
 	return res, nil
 }
 
