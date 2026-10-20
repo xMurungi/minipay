@@ -60,6 +60,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusConflict, "IDEMPOTENCY_KEY_REUSE", "this Idempotency-Key was already used for a different request")
 	case errors.Is(err, ledger.ErrTransferNotFound):
 		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND", "transfer not found")
+	case errors.Is(err, ledger.ErrNotReversible):
+		writeError(w, http.StatusConflict, "NOT_REVERSIBLE", "this transfer cannot be reversed")
 	default:
 		log.Println("unexpected error:", err)
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")

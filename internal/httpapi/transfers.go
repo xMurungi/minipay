@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -67,5 +68,31 @@ func (s *Server) getTransfer(w http.ResponseWriter, r *http.Request) {
 		"amount":             money.FormatKES(t.AmountMinor),
 		"status":             t.Status,
 		"createdAt":          t.CreatedAt.UTC().Format(time.RFC3339),
+	})
+}
+
+func (s *Server) reverseTransfer(w http.ResponseWriter, r *http.Request) {
+	original := r.PathValue("reference")
+
+	res, err := s.svc.Reverse(r.Context(), original)
+	
+	if err != nil {
+		if errors.Is(err, ledger.ErrInsufficientFunds) {
+			writeError(w, http.StatusUnprocessableEntity, "RECIPIENT_SPENT",
+				"the recipient no longer has enough money to reverse this transfer")
+			return
+		}
+		writeDomainError(w, err)
+		return
+	}
+
+	if res.Replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"reference": res.Reference,
+		"reverses":  original,
+		"status":    "COMPLETED",
 	})
 }

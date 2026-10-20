@@ -20,7 +20,8 @@ func New(svc *ledger.Service) http.Handler {
 	mux.HandleFunc("POST /api/transfers", s.createTransfer)
 	mux.HandleFunc("GET /api/transfers/{reference}", s.getTransfer)
 	mux.HandleFunc("GET /api/accounts/{id}/transactions", s.transactions)
-
+	mux.HandleFunc("POST /api/transfers/{reference}/reverse", s.reverseTransfer)
+	
 	return mux
 }
 
