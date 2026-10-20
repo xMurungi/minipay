@@ -29,10 +29,19 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.svc.Transfer(r.Context(), req.SourceAccount, req.DestinationAccount, amount)
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+
+	res, err := s.svc.Transfer(r.Context(), key, req.SourceAccount, req.DestinationAccount, amount)
 	if err != nil {
 		writeDomainError(w, err)
 		return
+	}
+
+	if res.Replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
 	}
 
 	writeJSON(w, http.StatusCreated, map[string]any{
