@@ -168,7 +168,7 @@ var (
 	errSystemAccount   = errors.New("cannot deposit into the system account")
 )
 
-func deposit(ctx context.Context, pool *pgxpool.Pool, accountID, amountMinor int64) (reference string, newbalance int64, err error) {
+func deposit(ctx context.Context, pool *pgxpool.Pool, accountID, amountMinor int64) (reference string, newBalance int64, err error) {
 	if accountID == systemAccountID {
 		return "", 0, errSystemAccount
 	}
@@ -177,22 +177,19 @@ func deposit(ctx context.Context, pool *pgxpool.Pool, accountID, amountMinor int
 	if err != nil {
 		return "", 0, err
 	}
-
 	defer tx.Rollback(ctx) // does nothing after a successful commit
 
 	// lock both accounts, lowest id first
-	rows, err := tx.Query(ctx, `
-		SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []int64{systemAccountID, accountID})
-
+	rows, err := tx.Query(ctx,
+		`SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
+		[]int64{systemAccountID, accountID})
 	if err != nil {
 		return "", 0, err
 	}
-
 	found := 0
 	for rows.Next() {
 		found++
 	}
-
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return "", 0, err
@@ -201,38 +198,37 @@ func deposit(ctx context.Context, pool *pgxpool.Pool, accountID, amountMinor int
 		return "", 0, errAccountNotFound
 	}
 
-	if _, err := tx.Exec(ctx, `
-		UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2`, amountMinor, accountID); err != nil {
-			return "", 0, err
-		}
-
-	if err:= tx.QueryRow(ctx,`
-		UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`,
-		amountMinor, accountID).Scan(&newbalance); err != nil {
-			return "", 0, err
-		}
-	
-	var transferID int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
-		VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
-		         $1, $2, $3, 'COMPLETED')
-		RETURNING id, reference`, 
-		systemAccountID, accountID, amountMinor).Scan(&transferID, &reference); err != nil {
-			return "", 0, err
+	if _, err := tx.Exec(ctx,
+		`UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2`,
+		amountMinor, systemAccountID); err != nil {
+		return "", 0, err
 	}
-
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
-		VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`,
-		transferID, systemAccountID, accountID, amountMinor); err != nil {
+	if err := tx.QueryRow(ctx,
+		`UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`,
+		amountMinor, accountID).Scan(&newBalance); err != nil {
 		return "", 0, err
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return "", 0, nil
+	var transferID int64
+	if err := tx.QueryRow(ctx,
+		`INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
+		 VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
+		         $1, $2, $3, 'COMPLETED')
+		 RETURNING id, reference`,
+		systemAccountID, accountID, amountMinor).Scan(&transferID, &reference); err != nil {
+		return "", 0, err
 	}
 
-	return reference, newbalance, nil
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
+		 VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`,
+		transferID, systemAccountID, accountID, amountMinor); err != nil {
+		return "", 0, err
+	}
+	
+	if err := tx.Commit(ctx); err != nil {
+		return "", 0, err
+	}
+	return reference, newBalance, nil
 }
 
