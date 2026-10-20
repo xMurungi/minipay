@@ -9,7 +9,7 @@ import (
 
 var ErrInvalidAmount = errors.New("invalid amount")
 
-// ParseKES turns "1500", "1500.5" or "1500.50" into minor units (150050).
+// ParseKES turns "1500", "1500.5" or "1500.50" into cents.
 func ParseKES(s string) (int64, error) {
 	s = strings.TrimSpace(s)
 	whole, frac, _ := strings.Cut(s, ".")
@@ -33,5 +33,10 @@ func ParseKES(s string) (int64, error) {
 }
 
 func FormatKES(minor int64) string {
-	return fmt.Sprintf("%d.%02d", minor/100, minor%100)
+	sign := ""
+	if minor < 0 {
+		sign = "-"
+		minor = -minor
+	}
+	return fmt.Sprintf("%s%d.%02d", sign, minor/100, minor%100)
 }
