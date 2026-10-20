@@ -133,27 +133,61 @@ func run() {
 			return
 		}
 
-		reference, newBalance, err := deposit(r.Context(), pool, id, amount)
+		// reference, newBalance, err := deposit(r.Context(), pool, id, amount)
+		res, err := transfer(r.Context(), pool, systemAccountID, id, amount)
 		if err != nil {
-			switch {
-			case errors.Is(err, errAccountNotFound):
-				http.Error(w, "account not found", http.StatusNotFound)
-			case errors.Is(err, errSystemAccount):
-				http.Error(w, err.Error(), http.StatusUnprocessableEntity)
-			default:
-				log.Println("deposit error:", err)
-				http.Error(w, "internal error", http.StatusInternalServerError)
-			}
+			WriteTransferError(w, err)
 			return
 		}
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
 		json.NewEncoder(w).Encode(map[string]any{
-			"reference": reference,
+			"reference": res.Reference,
 			"accountId": id,
 			"deposited": money.FormatKES(amount),
-			"newBalance": money.FormatKES(newBalance),
+			"newBalance": money.FormatKES(res.DestBalance),
+		})
+	})
+
+	mux.HandleFunc("POST /api/transfers", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			SourceAccount      int64  `json:"sourceAccount"`
+			DestinationAccount int64  `json:"destinationAccount"`
+			Amount             string `json:"amount"`
+		}
+
+		dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+		dec.DisallowUnknownFields()
+
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+
+		amount, err := money.ParseKES(req.Amount)
+		if err != nil || amount <= 0 {
+			http.Error(w, "amount must be positive with at most 2 decimals", http.StatusBadRequest)
+			return
+		}
+
+		if req.SourceAccount == systemAccountID {
+			http.Error(w, "system account cannot be used in transfer", http.StatusUnprocessableEntity)
+			return
+		}
+
+		res, err := transfer(r.Context(), pool, req.SourceAccount, req.DestinationAccount, amount)
+		if err != nil {
+			WriteTransferError(w, err)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		json.NewEncoder(w).Encode(map[string]any{
+			"reference": res.Reference,
+			"status": "COMPLETED",
+			"amount": money.FormatKES(amount),
 		})
 	})
 	
@@ -166,69 +200,113 @@ const systemAccountID int64 = 1
 var (
 	errAccountNotFound = errors.New("account not found")
 	errSystemAccount   = errors.New("cannot deposit into the system account")
+	errSameAccount       = errors.New("source and destination must differ")
+	errInsufficientFunds = errors.New("insufficient funds")
 )
 
-func deposit(ctx context.Context, pool *pgxpool.Pool, accountID, amountMinor int64) (reference string, newBalance int64, err error) {
-	if accountID == systemAccountID {
-		return "", 0, errSystemAccount
+type transferResult struct {
+	Reference string
+	SourceBalance int64
+	DestBalance int64
+}
+
+func transfer(ctx context.Context, pool *pgxpool.Pool, sourceID, destID, amountMinor int64) (transferResult, error) {
+	if sourceID == destID {
+		return transferResult{}, errSameAccount
 	}
 
 	tx, err := pool.Begin(ctx)
 	if err != nil {
-		return "", 0, err
+		return transferResult{}, err
 	}
-	defer tx.Rollback(ctx) // does nothing after a successful commit
 
-	// lock both accounts, lowest id first
-	rows, err := tx.Query(ctx,
-		`SELECT id FROM accounts WHERE id = ANY($1) ORDER BY id FOR UPDATE`,
-		[]int64{systemAccountID, accountID})
+	defer tx.Rollback(ctx)
+
+	// lock both accounts, lowest id first, and read what we need to decide
+	rows, err := tx.Query(ctx, `
+		SELECT id, balance_minor, is_system FROM accounts
+		WHERE id = ANY($1) ORDER BY id FOR UPDATE`, []int64{sourceID, destID})
 	if err != nil {
-		return "", 0, err
+		return transferResult{}, err
 	}
-	found := 0
+
+	type acct struct {
+		balance int64
+		system bool
+	}
+
+	accts := map[int64]acct{}
 	for rows.Next() {
-		found++
+		var id int64
+		var a acct
+		if err := rows.Scan(&id, &a.balance, &a.system); err != nil {
+			return transferResult{}, err
+		}
+
+		accts[id] = a
 	}
+
 	rows.Close()
 	if err := rows.Err(); err != nil {
-		return "", 0, err
-	}
-	if found != 2 {
-		return "", 0, errAccountNotFound
+		return transferResult{}, err
 	}
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2`,
-		amountMinor, systemAccountID); err != nil {
-		return "", 0, err
-	}
-	if err := tx.QueryRow(ctx,
-		`UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`,
-		amountMinor, accountID).Scan(&newBalance); err != nil {
-		return "", 0, err
+	src, okS := accts[sourceID]
+	_, okD := accts[destID]
+	if ! okS || !okD {
+		return transferResult{}, errAccountNotFound
 	}
 
-	var transferID int64
-	if err := tx.QueryRow(ctx,
-		`INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
-		 VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
-		         $1, $2, $3, 'COMPLETED')
-		 RETURNING id, reference`,
-		systemAccountID, accountID, amountMinor).Scan(&transferID, &reference); err != nil {
-		return "", 0, err
+	if !src.system && src.balance < amountMinor {
+		return transferResult{}, errInsufficientFunds
 	}
 
-	if _, err := tx.Exec(ctx,
-		`INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
-		 VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`,
-		transferID, systemAccountID, accountID, amountMinor); err != nil {
-		return "", 0, err
+	var res transferResult
+	if err := tx.QueryRow(ctx, 
+		`UPDATE accounts SET balance_minor = balance_minor - $1 WHERE id = $2 RETURNING balance_minor`, 
+		amountMinor, sourceID).Scan(&res.SourceBalance); err != nil {
+		return transferResult{}, err
 	}
-	
+
+	if err := tx.QueryRow(ctx, 
+		`UPDATE accounts SET balance_minor = balance_minor + $1 WHERE id = $2 RETURNING balance_minor`, 
+		amountMinor, res.DestBalance).Scan(&res.DestBalance); err != nil {
+		return transferResult{}, err
+	}
+
+	var tranferID int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO transfers (reference, source_account_id, dest_account_id, amount_minor, status)
+		VALUES ('TXN-' || to_char(now(), 'YYYYMMDD') || '-' || lpad(nextval('transfer_ref_seq')::text, 6, '0'),
+			$1, $2, $3, 'COMPLETED'
+		RETURNING id, reference`,
+	sourceID, destID, amountMinor).Scan(&tranferID, &res.Reference); err != nil {
+		return transferResult{}, err
+	}
+
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO ledger_entries (transfer_id, account_id, direction, amount_minor)
+		VALUES ($1, $2, 'DEBIT', $4), ($1, $3, 'CREDIT', $4)`, 
+		tranferID, sourceID, destID, amountMinor); err != nil {
+		return transferResult{}, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
-		return "", 0, err
+		return transferResult{}, err
 	}
-	return reference, newBalance, nil
+
+	return res, nil
+}
+
+func WriteTransferError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, errAccountNotFound):
+		http.Error(w, "account not found", http.StatusNotFound)
+	case errors.Is(err, errSameAccount):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	default:
+		log.Println("transfer error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }
 
