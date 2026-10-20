@@ -58,6 +58,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "SAME_ACCOUNT", "source and destination must differ")
 	case errors.Is(err, ledger.ErrKeyReuse):
 		writeError(w, http.StatusConflict, "IDEMPOTENCY_KEY_REUSE", "this Idempotency-Key was already used for a different request")
+	case errors.Is(err, ledger.ErrTransferNotFound):
+		writeError(w, http.StatusNotFound, "TRANSFER_NOT_FOUND", "transfer not found")
 	default:
 		log.Println("unexpected error:", err)
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -19,6 +20,7 @@ var (
 	ErrSameAccount       = errors.New("source and destination must differ")
 	ErrInsufficientFunds = errors.New("insufficient funds")
 	ErrKeyReuse          = errors.New("idempotency key reused with a different request")
+	ErrTransferNotFound  = errors.New("transfer not found")
 )
 
 type Service struct {
@@ -178,4 +180,60 @@ func (s *Service) Transfer(ctx context.Context, key string, sourceID, destID, am
 		return TransferResult{}, err
 	}
 	return res, nil
+}
+
+type TransferInfo struct {
+	Reference   string
+	SourceID    int64
+	DestID      int64
+	AmountMinor int64
+	Status      string
+	CreatedAt   time.Time
+}
+
+type Entry struct {
+	EntryID     int64
+	Reference   string
+	Direction   string
+	AmountMinor int64
+	CreatedAt   time.Time
+}
+
+func (s *Service) GetTransfer(ctx context.Context, reference string) (TransferInfo, error) {
+	t := TransferInfo{Reference: reference}
+	err := s.pool.QueryRow(ctx, `
+		SELECT source_account_id, dest_account_id, amount_minor, status, created_at
+		FROM transfers WHERE reference = $1`,
+		reference).Scan(&t.SourceID, &t.DestID, &t.AmountMinor, &t.Status, &t.CreatedAt)
+
+	if errors.Is(err, pgx.ErrNoRows) {
+		return TransferInfo{}, ErrTransferNotFound
+	}
+	return t, err
+}
+
+// ListEntries returns an account's ledger lines, newest first.
+// beforeID == 0 means "from the newest"; pass the last EntryID you saw to get the next page.
+func (s *Service) ListEntries(ctx context.Context, accountID int64, limit int, beforeID int64) ([]Entry, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT l.id, t.reference, l.direction, l.amount_minor, t.created_at
+		FROM ledger_entries l JOIN transfers t ON t.id = l.transfer_id
+		WHERE l.account_id = $1 AND ($2::bigint = 0 OR l.id < $2::bigint)
+		ORDER BY l.id DESC LIMIT $3`,
+		accountID, beforeID, limit)
+	if err != nil {
+		return nil, err
+	}
+
+	defer rows.Close()
+
+	entries := []Entry{}
+	for rows.Next() {
+		var e Entry
+		if err := rows.Scan(&e.EntryID, &e.Reference, &e.Direction, &e.AmountMinor, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		entries = append(entries, e)
+	}
+	return entries, rows.Err()
 }
