@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/xMurungi/minipay/internal/ledger"
 	"github.com/xMurungi/minipay/internal/money"
@@ -48,5 +49,23 @@ func (s *Server) createTransfer(w http.ResponseWriter, r *http.Request) {
 		"reference": res.Reference,
 		"status":    "COMPLETED",
 		"amount":    money.FormatKES(amount),
+	})
+}
+
+func (s *Server) getTransfer(w http.ResponseWriter, r *http.Request) {
+
+	t, err := s.svc.GetTransfer(r.Context(), r.PathValue("reference"))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"reference":          t.Reference,
+		"sourceAccount":      t.SourceID,
+		"destinationAccount": t.DestID,
+		"amount":             money.FormatKES(t.AmountMinor),
+		"status":             t.Status,
+		"createdAt":          t.CreatedAt.UTC().Format(time.RFC3339),
 	})
 }
