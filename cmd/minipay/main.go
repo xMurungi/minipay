@@ -171,7 +171,7 @@ func run() {
 			return
 		}
 
-		if req.SourceAccount == systemAccountID {
+		if req.SourceAccount == systemAccountID || req.DestinationAccount == systemAccountID {
 			http.Error(w, "system account cannot be used in transfer", http.StatusUnprocessableEntity)
 			return
 		}
@@ -296,6 +296,10 @@ func WriteTransferError(w http.ResponseWriter, err error) {
 	case errors.Is(err, errAccountNotFound):
 		http.Error(w, "account not found", http.StatusNotFound)
 	case errors.Is(err, errSameAccount):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.Is(err, errInsufficientFunds):
+		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
+	case errors.Is(err, errSystemAccount):
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 	default:
 		log.Println("transfer error", err)
