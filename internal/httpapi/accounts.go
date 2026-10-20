@@ -74,15 +74,30 @@ func (s *Server) deposit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res, err := s.svc.Transfer(r.Context(), ledger.SystemAccountID, id, amount)
+	key, ok := idempotencyKey(w, r)
+	if !ok {
+		return
+	}
+
+	res, err := s.svc.Transfer(r.Context(), key, ledger.SystemAccountID, id, amount)
 	if err != nil {
 		writeDomainError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"reference":  res.Reference,
-		"accountId":  id,
-		"deposited":  money.FormatKES(amount),
-		"newBalance": money.FormatKES(res.DestBalance),
-	})
+
+	out := map[string]any{
+		"reference": res.Reference,
+		"accountId": id,
+		"deposited": money.FormatKES(amount),
+	}
+	if res.Replayed {
+		w.Header().Set("Idempotent-Replayed", "true")
+	} else {
+		out["newBalance"] = money.FormatKES(res.DestBalance)
+	}
+
+	writeJSON(
+		w,
+		http.StatusCreated,
+		out)
 }
