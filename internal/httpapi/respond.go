@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/xMurungi/minipay/internal/ledger"
 )
@@ -32,6 +33,19 @@ func pathID(r *http.Request) (int64, error) {
 	return strconv.ParseInt(r.PathValue("id"), 10, 64)
 }
 
+func idempotencyKey(w http.ResponseWriter, r *http.Request) (string, bool) {
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	if key == "" || len(key) > 255 {
+		writeError(
+			w,
+			http.StatusBadRequest,
+			"IDEMPOTENCY_KEY_REQUIRED",
+			"Idempotency-Key header is required (max 255 characters)")
+		return "", false
+	}
+	return key, true
+}
+
 // writeDomainError turns business errors into clear client errors,
 // and hides everything unexpected behind a generic 500.
 func writeDomainError(w http.ResponseWriter, err error) {
@@ -42,6 +56,8 @@ func writeDomainError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusUnprocessableEntity, "INSUFFICIENT_FUNDS", "insufficient funds")
 	case errors.Is(err, ledger.ErrSameAccount):
 		writeError(w, http.StatusUnprocessableEntity, "SAME_ACCOUNT", "source and destination must differ")
+	case errors.Is(err, ledger.ErrKeyReuse):
+		writeError(w, http.StatusConflict, "IDEMPOTENCY_KEY_REUSE", "this Idempotency-Key was already used for a different request")
 	default:
 		log.Println("unexpected error:", err)
 		writeError(w, http.StatusInternalServerError, "INTERNAL", "internal error")
