@@ -5,7 +5,26 @@ services:
       POSTGRES_DB: minipay
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: example
-    ports: ["5432:5432"]
-    volumes: ["pgdata:/var/lib/postgresql/data"]
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d minipay"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: postgres://postgres:example@db:5432/minipay?sslmode=disable
+      ADDR: ":8080"
+    depends_on:
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
