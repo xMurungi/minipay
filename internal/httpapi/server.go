@@ -21,6 +21,7 @@ func New(svc *ledger.Service) http.Handler {
 	mux.HandleFunc("GET /api/transfers/{reference}", s.getTransfer)
 	mux.HandleFunc("GET /api/accounts/{id}/transactions", s.transactions)
 	mux.HandleFunc("POST /api/transfers/{reference}/reverse", s.reverseTransfer)
+	mux.HandleFunc("GET /api/admin/reconciliation", s.reconciliation)
 	
 	return mux
 }

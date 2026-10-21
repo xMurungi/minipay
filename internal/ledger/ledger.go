@@ -306,6 +306,71 @@ func (s *Service) Reverse(ctx context.Context, reference string) (TransferResult
 	if err := tx.Commit(ctx); err != nil {
 		return TransferResult{}, err
 	}
-	
+
 	return res, nil
+}
+
+type Mismatch struct {
+	AccountID    int64
+	BalanceMinor int64
+	LedgerMinor  int64
+}
+
+type Reconciliation struct {
+	OK              bool
+	AccountsChecked int
+	LedgerNetMinor  int64
+	Mismatches      []Mismatch
+}
+
+func (s *Service) Reconcile(ctx context.Context) (Reconciliation, error) {
+	// one read-only snapshot, so a transfer committing mid-check can't cause a false alarm
+	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return Reconciliation{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	rec := Reconciliation{Mismatches: []Mismatch{}}
+
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM accounts`).Scan(&rec.AccountsChecked); err != nil {
+		return Reconciliation{}, err
+	}
+
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(SUM(CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END), 0)::bigint
+		   FROM ledger_entries`).Scan(&rec.LedgerNetMinor); err != nil {
+		return Reconciliation{}, err
+	}
+
+	rows, err := tx.Query(ctx,
+		`SELECT id, balance_minor, ledger_minor FROM (
+		     SELECT a.id, a.balance_minor,
+		            COALESCE(SUM(CASE l.direction WHEN 'CREDIT' THEN l.amount_minor ELSE -l.amount_minor END), 0)::bigint AS ledger_minor
+		       FROM accounts a
+		       LEFT JOIN ledger_entries l ON l.account_id = a.id
+		      GROUP BY a.id, a.balance_minor
+		 ) x
+		 WHERE balance_minor <> ledger_minor
+		 ORDER BY id`)
+	if err != nil {
+		return Reconciliation{}, err
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		var m Mismatch
+		if err := rows.Scan(&m.AccountID, &m.BalanceMinor, &m.LedgerMinor); err != nil {
+			return Reconciliation{}, err
+		}
+		rec.Mismatches = append(rec.Mismatches, m)
+	}
+	
+	if err := rows.Err(); err != nil {
+		return Reconciliation{}, err
+	}
+
+	rec.OK = rec.LedgerNetMinor == 0 && len(rec.Mismatches) == 0
+	return rec, nil
 }
