@@ -41,9 +41,9 @@ Amounts are strings like `"1500.00"`.
 
 ## Decisions I made
 
-- (Write in your own words: why a rejected transfer rolls back its idempotency key.)
-- (Why the SYSTEM account may go negative.)
-- (What happens when someone tries to reverse a transfer the recipient already spent.)
+- 
+- 
+- 
 
 ## Not included
 
